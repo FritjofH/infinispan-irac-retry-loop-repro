@@ -1,5 +1,7 @@
 # Infinispan IRAC retry loop on evicted keys (16.2+)
 
+Reported upstream: https://github.com/infinispan/infinispan/issues/18383
+
 Reproducer for a busy loop in `DefaultIracManager` (cross-site async backup, IRAC) on a
 cache **without a persistence store** that evicts entries.
 
