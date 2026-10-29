@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- One site. @SITE@, @REMOTE@, @LOCAL_PORT@ and @BRIDGE_PORT@ are filled in by IracRetryLoopRepro. -->
+<infinispan xmlns="urn:infinispan:config:15.0" xmlns:ispn="urn:infinispan:config:15.0">
+  <jgroups>
+    <!-- Local cluster of this site: stock "tcp" stack, loopback only, static discovery. -->
+    <stack name="local" extends="tcp">
+      <TCP xmlns="urn:org:jgroups" bind_addr="127.0.0.1" bind_port="@LOCAL_PORT@" port_range="0" ispn:stack.combine="COMBINE"/>
+      <TCPPING xmlns="urn:org:jgroups" initial_hosts="127.0.0.1[@LOCAL_PORT@]" port_range="0"
+               ispn:stack.combine="REPLACE" ispn:stack.position="MPING"/>
+    </stack>
+    <!-- Bridge between the sites' site masters. -->
+    <stack name="bridge" extends="tcp">
+      <TCP xmlns="urn:org:jgroups" bind_addr="127.0.0.1" bind_port="@BRIDGE_PORT@" port_range="0" ispn:stack.combine="COMBINE"/>
+      <TCPPING xmlns="urn:org:jgroups" initial_hosts="127.0.0.1[7840],127.0.0.1[7860]" port_range="0"
+               ispn:stack.combine="REPLACE" ispn:stack.position="MPING"/>
+    </stack>
+    <stack name="xsite" extends="local">
+      <relay.RELAY2 xmlns="urn:org:jgroups" site="@SITE@" max_site_masters="1"/>
+      <remote-sites default-stack="bridge">
+        <remote-site name="A"/>
+        <remote-site name="B"/>
+      </remote-sites>
+    </stack>
+  </jgroups>
+
+  <cache-container name="@SITE@">
+    <transport cluster="site-@SITE@" stack="xsite" node-name="@SITE@-1"/>
+    <!-- No persistence. Bounded memory: entries beyond 10 are evicted and cannot be loaded again. -->
+    <distributed-cache name="repro" mode="SYNC">
+      <memory max-count="10" when-full="REMOVE"/>
+      <backups>
+        <backup site="@REMOTE@" strategy="ASYNC"/>
+      </backups>
+    </distributed-cache>
+  </cache-container>
+</infinispan>
