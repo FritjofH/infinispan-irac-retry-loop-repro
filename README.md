@@ -132,9 +132,38 @@ Steady state (last 10 s with site B up), runs 1–3:
 | 16.1.4 run 2 | 0 | 0 | 0.00 |
 | 16.1.4 run 3 | 0 | 0 | 0.00 |
 
+Also run once per version on JDK 25.0.4.1 (Homebrew OpenJDK), same machine:
+
+```
+VERDICT Infinispan 16.3.1: RETRY LOOP - evicted keys never drain and IRAC re-runs with nothing to send (40 keys still queued, 114,016 IRAC passes/s, process CPU 1.51 cores)
+VERDICT Infinispan 16.1.4: NO LOOP - IRAC queue drained after site B came up (0 keys still queued, 0 IRAC passes/s, process CPU 0.01 cores)
+```
+
 In 16.1.4 the 40 evicted keys are discarded on the first IRAC pass (pending drops 50 → 10 while site B is still down); the other 10 are sent when site B comes up. In 16.3.1 all 50 stay queued while site B is down (sends fail and IRAC backs off, so there is no loop yet); when site B is up the 10 live keys are sent, and the 40 evicted keys keep IRAC running with nothing to send.
 
 On JDK 21 the embedded blocking executor is a thread-per-task virtual-thread executor (`ThreadPerTaskExecutor` / `VirtualThread.run` → `IracExecutor$WrappedRunnable.apply` → `DefaultIracManager.run(DefaultIracManager.java:362)` in a logged stack trace), so each IRAC pass is a new virtual thread.
+
+## Seen in production
+
+Infinispan Server 16.3.1 (`quay.io/infinispan/server:16.3.1`, JDK 25, virtual threads enabled,
+2 CPUs per pod), two sites, ASYNC backups, caches without a store, using `lifespan` and per-entry TTLs.
+The problem started after an upgrade from 16.0.14 and a cross-site connectivity loss.
+
+- One pod at a time ran at ~100 % CPU. Restarting it moved the load to another pod.
+- A thread dump showed both `ForkJoinPool` carrier threads busy. The mounted virtual thread was in
+  `DefaultIracManager.run(DefaultIracManager.java:362)` → `FlowableConcatMapMaybe.drain`. The virtual
+  thread id was ~710 million after ~8,200 s uptime.
+- With `org.infinispan.xsite.irac` at TRACE for 2 s, `server.log` got 85,993 lines of
+  `[IRAC] Entry and tombstone both null for key …, scheduling retry`, all for **one** key: a short
+  String key with a per-entry TTL, in a cache without a store, all with the same `requestId`.
+- With the carrier threads busy, the node missed JGroups failure detection. Members were suspected
+  and dropped from the view without restarting, and liveness probes timed out.
+- Clearing the cache removed the key from the IRAC queue (`trackClear` discards `updatedKeys`).
+
+In production the key was not evicted (`evictions` was 0). The likely path is TTL expiry plus a
+change of primary owner during restarts, which leaves the new primary with neither entry nor
+tombstone. This is inferred, not reproduced here. Either way, "entry and tombstone both null" is
+not always a passivation race, and IRAC retries such a key forever.
 
 ## Suggested fix
 
